@@ -23,6 +23,29 @@ jobs:
         run: python monitor.py
 
       - if: steps.check.outputs.hit == 'true'
+        name: Discord notify
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          MATCHES: ${{ steps.check.outputs.matches }}
+          ALL: ${{ steps.check.outputs.all_matching }}
+        run: |
+          curl -H "Content-Type: application/json" -X POST "$WEBHOOK" -d @- <<EOF
+          {
+            "username": "Kennedy-Warren Monitor",
+            "embeds": [{
+              "title": "🏠 New availability: $MATCHES",
+              "url": "https://kennedywarren.com/floorplans/",
+              "color": 3066993,
+              "fields": [
+                {"name": "Newly available", "value": "$MATCHES", "inline": false},
+                {"name": "All currently matching", "value": "${ALL:-none}", "inline": false}
+              ],
+              "footer": {"text": "Run ${{ github.run_id }}"}
+            }]
+          }
+          EOF
+
+      - if: steps.check.outputs.hit == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
