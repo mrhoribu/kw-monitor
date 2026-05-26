@@ -19,7 +19,7 @@ jobs:
 
       - id: check
         env:
-          WATCH_LIST: 'Historic 03'   # comma-separate for multiple
+          WATCH_LIST: 'Historic 03,Historic 05'   # comma-separate for multiple
         run: python monitor.py
 
       - if: steps.check.outputs.hit == 'true'
