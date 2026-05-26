@@ -1,0 +1,49 @@
+name: Kennedy-Warren monitor
+
+on:
+#  schedule:
+#    - cron: '0 */4 * * *'   # every 4 hours
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to commit state.json back
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install requests beautifulsoup4
+
+      - id: check
+        env:
+          WATCH_LIST: 'Historic 03'   # comma-separate for multiple
+        run: python monitor.py
+
+      - if: steps.check.outputs.hit == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USER }}
+          password: ${{ secrets.MAIL_PASS }}
+          to: your.email@example.com
+          from: KW Monitor <${{ secrets.MAIL_USER }}>
+          subject: "🏠 Kennedy-Warren: ${{ steps.check.outputs.matches }} now available"
+          body: |
+            Newly available floorplans matching your watch list:
+            ${{ steps.check.outputs.matches }}
+
+            All currently-available floorplans (${{ steps.check.outputs.available_count }}):
+            ${{ steps.check.outputs.all_matching }}
+
+            View: https://kennedywarren.com/floorplans/
+            Run:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "state: update floorplan availability"
+          file_pattern: state.json
