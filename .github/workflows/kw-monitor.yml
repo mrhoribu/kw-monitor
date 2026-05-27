@@ -32,12 +32,13 @@ jobs:
 
       - if: steps.check.outputs.hit == 'true'
         name: Discord notify
+        continue-on-error: true
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           MATCHES: ${{ steps.check.outputs.matches }}
           ALL: ${{ steps.check.outputs.all_matching }}
         run: |
-          curl -H "Content-Type: application/json" -X POST "$WEBHOOK" -d @- <<EOF
+          curl --fail-with-body -H "Content-Type: application/json" -X POST "$WEBHOOK" -d @- <<EOF
           {
             "username": "Kennedy-Warren Monitor",
             "embeds": [{
@@ -50,6 +51,29 @@ jobs:
               ],
               "footer": {"text": "Run ${{ github.run_id }}"}
             }]
+          }
+          EOF
+
+      - if: steps.check.outputs.hit == 'true'
+        name: Resend email notify
+        continue-on-error: true
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          MAIL_FROM: ${{ secrets.RESEND_FROM }}      # "KW Monitor <monitor@yourdomain.com>"
+          MAIL_TO: ${{ secrets.RESEND_TO }}          # your.email@example.com
+          MATCHES: ${{ steps.check.outputs.matches }}
+          ALL: ${{ steps.check.outputs.all_matching }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl --fail-with-body -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @- <<EOF
+          {
+            "from": "$MAIL_FROM",
+            "to": ["$MAIL_TO"],
+            "subject": "🏠 Kennedy-Warren: $MATCHES available",
+            "html": "<h2>New floorplan availability</h2><p><strong>Newly available:</strong> $MATCHES</p><p><strong>All currently matching:</strong> ${ALL:-none}</p><p><a href=\"https://kennedywarren.com/floorplans/\">View floorplans</a> · <a href=\"$RUN_URL\">Workflow run</a></p>"
           }
           EOF
 
