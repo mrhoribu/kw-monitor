@@ -59,19 +59,22 @@ jobs:
         continue-on-error: true
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          MAIL_FROM: ${{ secrets.RESEND_FROM }}      # "KW Monitor <monitor@yourdomain.com>"
-          MAIL_TO: ${{ secrets.RESEND_TO }}          # your.email@example.com
+          MAIL_FROM: ${{ secrets.RESEND_FROM }}
+          MAIL_TO: ${{ secrets.RESEND_TO }}          # comma-separated: a@x.com,b@y.com
           MATCHES: ${{ steps.check.outputs.matches }}
           ALL: ${{ steps.check.outputs.all_matching }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Convert comma-separated MAIL_TO into a JSON array, trimming whitespace
+          TO_JSON=$(echo "$MAIL_TO" | jq -Rc 'split(",") | map(gsub("^ +| +$"; ""))')
+
           curl --fail-with-body -X POST https://api.resend.com/emails \
             -H "Authorization: Bearer $RESEND_API_KEY" \
             -H "Content-Type: application/json" \
             -d @- <<EOF
           {
             "from": "$MAIL_FROM",
-            "to": ["$MAIL_TO"],
+            "to": $TO_JSON,
             "subject": "🏠 Kennedy-Warren: $MATCHES available",
             "html": "<h2>New floorplan availability</h2><p><strong>Newly available:</strong> $MATCHES</p><p><strong>All currently matching:</strong> ${ALL:-none}</p><p><a href=\"https://kennedywarren.com/floorplans/\">View floorplans</a> · <a href=\"$RUN_URL\">Workflow run</a></p>"
           }
@@ -81,3 +84,13 @@ jobs:
         with:
           commit_message: "state: update floorplan availability"
           file_pattern: state.json
+
+      - name: Report job failure to Discord
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -H "Content-Type: application/json" -X POST "$WEBHOOK" -d '{
+            "username": "KW Monitor (alert)",
+            "content": "⚠️ Workflow failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }'
