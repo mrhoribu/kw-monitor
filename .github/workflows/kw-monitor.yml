@@ -3,7 +3,7 @@ name: Kennedy-Warren monitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: '23 */1 * * *'   # every 1 hour
+    - cron: '23,53 * * * *'   # every 30mins
 
 permissions:
   contents: write   # needed to commit state.json back
