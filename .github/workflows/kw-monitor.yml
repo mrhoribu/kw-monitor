@@ -22,6 +22,14 @@ jobs:
           WATCH_LIST: 'Historic 03,Historic 05'   # comma-separate for multiple
         run: python monitor.py
 
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-response
+          path: debug/
+          retention-days: 1
+
       - if: steps.check.outputs.hit == 'true'
         name: Discord notify
         env:
