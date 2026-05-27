@@ -1,8 +1,27 @@
 #!/usr/bin/env python3
-"""Kennedy-Warren floorplan monitor with diagnostics."""
-import json, os, pathlib, re, sys
+"""
+Kennedy-Warren floorplan availability monitor.
+
+Polls a Jonah Systems render endpoint for currently-available floorplans,
+matches against a watch list, and emits GitHub Actions outputs that fire
+notification steps on state transitions (not-available → available).
+
+Behavior:
+  - Writes last-run.txt every run so the repo stays active (60-day rule).
+  - Retries network errors up to 3 times with progressive backoff.
+  - Exits 0 on persistent network errors so transient failures don't
+    pollute the workflow run history or fire failure notifications.
+  - Saves full response to debug/response.html for post-hoc inspection.
+  - State tracking via state.json — only alerts on transitions.
+
+Environment variables:
+  WATCH_LIST  : comma-separated floorplan names, e.g. "Historic 03,Historic 05"
+  FORCE_ALERT : "1"/"true" to bypass state check (useful for testing)
+"""
+import json, os, pathlib, re, time
+from datetime import datetime, timezone
 import requests
-from bs4 import BeautifulSoup
+from requests.exceptions import ConnectTimeout, ConnectionError, ReadTimeout
 
 URL = (
     "https://kennedywarren.com/floorplans/_fp-renderable/"
@@ -10,7 +29,6 @@ URL = (
     "%26action%3Drender%26type%3Dlisting-chunks/?forcecache=1"
 )
 
-# Mimic a real browser more closely — the previous UA was too "bot-like"
 HEADERS = {
     "x-requested-with": "XMLHttpRequest",
     "accept": "*/*",
@@ -33,122 +51,124 @@ HEADERS = {
 WATCH = [w.strip() for w in os.environ.get("WATCH_LIST", "Historic 03").split(",")]
 FORCE_ALERT = os.environ.get("FORCE_ALERT", "").lower() in ("1", "true", "yes")
 STATE_FILE = pathlib.Path("state.json")
-DEBUG_DIR = pathlib.Path("debug"); DEBUG_DIR.mkdir(exist_ok=True)
+HEARTBEAT_FILE = pathlib.Path("last-run.txt")
+DEBUG_DIR = pathlib.Path("debug")
+DEBUG_DIR.mkdir(exist_ok=True)
 
 
-def fetch():
-    print("=" * 60)
-    print("FETCH")
-    print("=" * 60)
-    print(f"URL: {URL}")
-    r = requests.get(URL, headers=HEADERS, timeout=30, allow_redirects=True)
-    print(f"Status:         {r.status_code}")
-    print(f"Final URL:      {r.url}")
-    print(f"Content-Type:   {r.headers.get('content-type')}")
-    print(f"Content-Length: {len(r.content)} bytes")
-    print(f"Redirected:     {len(r.history)} hops")
-    for h in r.history:
-        print(f"  -> {h.status_code} {h.url}")
-    return r
+def write_heartbeat() -> None:
+    """Write timestamp so the repo stays active (60-day inactivity rule)."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_id = os.environ.get("GITHUB_RUN_ID", "local")
+    server = os.environ.get("GITHUB_SERVER_URL", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_url = (
+        f"{server}/{repo}/actions/runs/{run_id}"
+        if server and repo and run_id != "local" else ""
+    )
+    HEARTBEAT_FILE.write_text(
+        f"last_run: {now}\nrun_id:   {run_id}\nrun_url:  {run_url}\n"
+    )
+    print(f"[heartbeat] {now} (run {run_id})")
 
 
-def diagnose(html: str):
-    print()
-    print("=" * 60)
-    print("RESPONSE INSPECTION")
-    print("=" * 60)
-    print(f"Total length: {len(html)} chars")
-    print(f"Head (first 1500):\n{html[:1500]}")
-    print(f"\nTail (last 500):\n{html[-500:]}")
+def fetch(max_attempts: int = 3):
+    """Fetch the endpoint with retries. Returns Response or None on failure."""
+    print(f"\n[fetch] {URL}")
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.get(URL, headers=HEADERS, timeout=30, allow_redirects=True)
+            print(f"[fetch] HTTP {r.status_code}, {len(r.content)} bytes, "
+                  f"content-type={r.headers.get('content-type')}")
+            for h in r.history:
+                print(f"[fetch] redirect: {h.status_code} -> {h.url}")
+            return r
+        except (ConnectTimeout, ConnectionError, ReadTimeout) as e:
+            last_err = e
+            wait = 5 * attempt   # 5s, 10s, 15s
+            print(f"[fetch] attempt {attempt}/{max_attempts} failed: "
+                  f"{type(e).__name__}: {e}")
+            if attempt < max_attempts:
+                print(f"[fetch] retrying in {wait}s")
+                time.sleep(wait)
+    print(f"[fetch] all {max_attempts} attempts failed; last error: {last_err}")
+    return None
 
-    # Save full response as an artifact for download
+
+def parse_titles(html: str) -> set[str]:
+    """Extract floorplan titles via regex on the <a title="Floorplan X"> attr.
+
+    BeautifulSoup doesn't reliably parse the <template>-wrapped chunks this
+    endpoint returns, so we go straight to a regex on the attribute that's
+    invariant across the cards.
+    """
     (DEBUG_DIR / "response.html").write_text(html)
-    print(f"\nFull response written to debug/response.html")
-
-    print()
-    print("=" * 60)
-    print("MARKER COUNTS")
-    print("=" * 60)
-    for m in ["<chunks>", "<template", "jd-fp-floorplan-card",
-              "jd-fp-card-info__title", "Historic", "Historic 03",
-              "Historic 05", "<!DOCTYPE", "<html", "Skip to main content"]:
-        print(f"  {m!r}: {html.count(m)}")
-
-    print()
-    print("=" * 60)
-    print("SELECTOR PROBES (html.parser)")
-    print("=" * 60)
-    soup = BeautifulSoup(html, "html.parser")
-    for sel in [
-        "p.jd-fp-card-info__title",
-        "a.jd-fp-floorplan-card",
-        "a[data-jd-fp-selector='floorplan-item']",
-        "[data-floorplan]",
-        "template",
-        "chunks",
-    ]:
-        matches = soup.select(sel)
-        sample = ""
-        if matches:
-            first = matches[0]
-            sample = (f" | first: text={first.get_text(strip=True)[:50]!r}"
-                      f" title={first.get('title','')!r}")
-        print(f"  {sel}: {len(matches)}{sample}")
-
-    print()
-    print("=" * 60)
-    print("REGEX EXTRACTION (parser-independent)")
-    print("=" * 60)
-    # Pull titles directly from the <a title="Floorplan X"> attribute — this
-    # avoids any <template>/parser nonsense entirely.
-    regex_titles = re.findall(r'<a[^>]+title="Floorplan ([^"]+)"', html)
-    print(f"  Floorplan titles via regex: {len(regex_titles)}")
-    if regex_titles:
-        print(f"  Titles: {regex_titles}")
-    return set(regex_titles)
+    print(f"[parse] markers: "
+          f"<chunks>={html.count('<chunks>')} "
+          f"<template={html.count('<template')} "
+          f"jd-fp-floorplan-card={html.count('jd-fp-floorplan-card')} "
+          f"<!DOCTYPE={html.count('<!DOCTYPE')}")
+    titles = set(re.findall(r'<a[^>]+title="Floorplan ([^"]+)"', html))
+    print(f"[parse] {len(titles)} titles: {sorted(titles)}")
+    return titles
 
 
-def main():
+def emit_output(**kwargs) -> None:
+    """Write key=value pairs to $GITHUB_OUTPUT for downstream workflow steps."""
+    gh_out = os.environ.get("GITHUB_OUTPUT")
+    if not gh_out:
+        return
+    with open(gh_out, "a") as f:
+        for k, v in kwargs.items():
+            f.write(f"{k}={v}\n")
+
+
+def main() -> int:
+    # Heartbeat first so it writes even if everything else fails.
+    write_heartbeat()
+
     r = fetch()
-    titles = diagnose(r.text)
+    if r is None:
+        # Network unreachable: not a real failure, just a missed beat.
+        print("[main] skipping this run; will retry on next schedule")
+        emit_output(hit="false", matches="", all_matching="", available_count=0)
+        return 0
 
-    # Use regex result as source of truth (most robust)
-    print()
-    print("=" * 60)
-    print("MATCHING")
-    print("=" * 60)
-    print(f"Watch list:         {WATCH}")
-    print(f"Available ({len(titles)}): {sorted(titles)}")
+    titles = parse_titles(r.text)
 
+    print(f"\n[match] watch list:        {WATCH}")
     currently_matching = {w for w in WATCH if w in titles}
-    print(f"Currently matching: {sorted(currently_matching)}")
+    print(f"[match] currently matching: {sorted(currently_matching)}")
 
     prev = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
     prev_matching = set(prev.get("matching", []))
 
     if FORCE_ALERT:
         newly_available = currently_matching
-        print("FORCE_ALERT=true — bypassing state check")
+        print("[match] FORCE_ALERT=true — bypassing state check")
     else:
         newly_available = currently_matching - prev_matching
-    print(f"Newly available:    {sorted(newly_available)}")
+    print(f"[match] newly available:    {sorted(newly_available)}")
 
     STATE_FILE.write_text(json.dumps({
         "all_available": sorted(titles),
         "matching": sorted(currently_matching),
     }, indent=2))
 
-    gh_out = os.environ.get("GITHUB_OUTPUT")
-    if gh_out:
-        with open(gh_out, "a") as f:
-            f.write(f"hit={'true' if newly_available else 'false'}\n")
-            f.write(f"matches={', '.join(sorted(newly_available))}\n")
-            f.write(f"all_matching={', '.join(sorted(currently_matching))}\n")
-            f.write(f"available_count={len(titles)}\n")
+    emit_output(
+        hit="true" if newly_available else "false",
+        matches=", ".join(sorted(newly_available)),
+        all_matching=", ".join(sorted(currently_matching)),
+        available_count=len(titles),
+    )
 
     if not titles:
-        print("\nWARNING: zero floorplan titles parsed — see debug/response.html")
-        # Don't raise — let the workflow upload the artifact
+        print("[warn] zero floorplan titles parsed — site may have changed. "
+              "See debug/response.html in the workflow artifacts.")
+
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
