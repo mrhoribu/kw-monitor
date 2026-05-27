@@ -19,7 +19,7 @@ jobs:
 
       - id: check
         env:
-          WATCH_LIST: 'Historic 05,Historic 02,Historic 03,Historic 14,Historic 27'   # comma-separate for multiple
+          WATCH_LIST: 'Historic 02,Historic 03,Historic 14,Historic 27'   # comma-separate for multiple
         run: python monitor.py
 
       - name: Upload debug artifacts
