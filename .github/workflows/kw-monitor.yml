@@ -77,7 +77,7 @@ jobs:
           }
           EOF
 
-      - uses: stefanzweifel/git-auto-commit-action@v5
+      - uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7.1.0
         with:
           commit_message: "state: update floorplan availability"
           file_pattern: state.json
