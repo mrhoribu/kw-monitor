@@ -16,7 +16,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15   # fetch retries can take ~8min worst case
     steps:
       - uses: actions/checkout@v7
 

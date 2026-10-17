@@ -8,7 +8,7 @@ notification steps on state transitions (not-available → available).
 
 Behavior:
   - Retries network errors and the host's "One moment, please..." page
-    up to 4 times with progressive backoff (15s, 30s, 45s).
+    up to 4 times with progressive backoff (1min, 2min, 3min).
   - Exits 0 on persistent network/HTTP/interstitial errors so transient
     failures don't pollute the workflow run history or fire failure
     notifications.
@@ -67,7 +67,7 @@ def fetch(max_attempts: int = 4) -> str | None:
             last_err = "interstitial page"
         except (urllib.error.URLError, TimeoutError) as e:  # HTTPError is a URLError
             last_err = f"{type(e).__name__}: {e}"
-        wait = 15 * attempt   # 15s, 30s, 45s
+        wait = 60 * attempt   # 1min, 2min, 3min
         print(f"[fetch] attempt {attempt}/{max_attempts} failed: {last_err}")
         if attempt < max_attempts:
             print(f"[fetch] retrying in {wait}s")
