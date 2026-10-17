@@ -33,6 +33,7 @@ jobs:
           name: debug-response
           path: debug/
           retention-days: 1
+          if-no-files-found: ignore   # empty when the site never responded
 
       - if: steps.check.outputs.hit == 'true'
         name: Discord notify
