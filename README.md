@@ -30,8 +30,9 @@ The script uses only the Python standard library. Nothing is installed with pip.
 
 ## Failure behavior
 
-- **Network or HTTP errors** are retried 3 times. If they keep failing, the run is skipped quietly and
-  `state.json` is left alone.
+- **Network or HTTP errors, and the site's "One moment, please..." holding page,** are retried up to
+  4 times, waiting 15s, 30s, then 45s between tries. If they keep failing, the run is skipped quietly
+  and `state.json` is left alone.
 - **The page loads but has no floorplan cards** (the site changed, or the bot is being blocked):
   the run fails, `state.json` is left alone, and a failure notice goes to Discord. The page that came
   back is saved as the `debug-response` workflow artifact (kept for 1 day) so you can inspect it.

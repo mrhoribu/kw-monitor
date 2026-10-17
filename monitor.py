@@ -7,9 +7,11 @@ matches against a watch list, and emits GitHub Actions outputs that fire
 notification steps on state transitions (not-available → available).
 
 Behavior:
-  - Retries network errors up to 3 times with progressive backoff.
-  - Exits 0 on persistent network/HTTP errors so transient failures don't
-    pollute the workflow run history or fire failure notifications.
+  - Retries network errors and the host's "One moment, please..." page
+    up to 4 times with progressive backoff (15s, 30s, 45s).
+  - Exits 0 on persistent network/HTTP/interstitial errors so transient
+    failures don't pollute the workflow run history or fire failure
+    notifications.
   - Exits 1 (without touching state) if the page no longer contains
     floorplan cards, so a site change fails loudly instead of silently.
   - Saves full response to debug/response.html for post-hoc inspection.
@@ -41,7 +43,12 @@ DEBUG_DIR = pathlib.Path("debug")
 DEBUG_DIR.mkdir(exist_ok=True)
 
 
-def fetch(max_attempts: int = 3) -> str | None:
+# Host sometimes serves a 200 "One moment, please..." page that reloads itself
+# after 5s instead of the real page. Retry it like a network error.
+INTERSTITIAL = "<title>One moment, please...</title>"
+
+
+def fetch(max_attempts: int = 4) -> str | None:
     """Fetch the page with retries. Returns HTML or None on failure."""
     print(f"\n[fetch] {URL}")
     last_err = None
@@ -52,16 +59,19 @@ def fetch(max_attempts: int = 3) -> str | None:
                 body = r.read()
                 print(f"[fetch] HTTP {r.status}, {len(body)} bytes, "
                       f"content-type={r.headers.get('content-type')}")
-                return body.decode(r.headers.get_content_charset() or "utf-8",
+                html = body.decode(r.headers.get_content_charset() or "utf-8",
                                    "replace")
+            (DEBUG_DIR / "response.html").write_text(html)
+            if INTERSTITIAL not in html:
+                return html
+            last_err = "interstitial page"
         except (urllib.error.URLError, TimeoutError) as e:  # HTTPError is a URLError
-            last_err = e
-            wait = 5 * attempt   # 5s, 10s, 15s
-            print(f"[fetch] attempt {attempt}/{max_attempts} failed: "
-                  f"{type(e).__name__}: {e}")
-            if attempt < max_attempts:
-                print(f"[fetch] retrying in {wait}s")
-                time.sleep(wait)
+            last_err = f"{type(e).__name__}: {e}"
+        wait = 15 * attempt   # 15s, 30s, 45s
+        print(f"[fetch] attempt {attempt}/{max_attempts} failed: {last_err}")
+        if attempt < max_attempts:
+            print(f"[fetch] retrying in {wait}s")
+            time.sleep(wait)
     print(f"[fetch] all {max_attempts} attempts failed; last error: {last_err}")
     return None
 
@@ -73,7 +83,6 @@ def parse_titles(html: str) -> set[str]:
     endpoint returns, so we go straight to a regex on the attribute that's
     invariant across the cards.
     """
-    (DEBUG_DIR / "response.html").write_text(html)
     print(f"[parse] markers: "
           f"<chunks>={html.count('<chunks>')} "
           f"<template={html.count('<template')} "
@@ -97,7 +106,8 @@ def emit_output(**kwargs) -> None:
 def main() -> int:
     html = fetch()
     if html is None:
-        # Network unreachable: not a real failure, just a missed beat.
+        # Network unreachable or stuck on the interstitial: not a real
+        # failure, just a missed beat.
         print("[main] skipping this run; will retry on next schedule")
         emit_output(hit="false", matches="", all_matching="", available_count=0)
         return 0
